@@ -1,11 +1,11 @@
-*Create the virtual environment*
+**Create the virtual environment**
 `py -m venv env`
 
-*Install libraries*
+**Install libraries**
 `py -m pip install requirements.txt`
 
-*Set environment variable*
+**Set environment variable**
 `set FLASK_APP=app.py`
 
-*Run project*
+**Run project**
 `flask run`

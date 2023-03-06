@@ -9,7 +9,8 @@ username = "myinstance-security"
 password = "SygyutF8JyLDfz5D"
 
 # Temas MQTT
-temp_topic = "security/temperature"
+hum_topic = "security/humedity"
+
 
 # Función de conexión con shiftr.io
 def on_connect(client, userdata, flags, rc):
@@ -23,9 +24,9 @@ client.connect(host, port, 60)
 
 # Bucle principal
 while True:
-    # Generar valores aleatorios de temperatura
-    temperatura = random.uniform(18, 25)
+    # Generar valores aleatorios de humedad 
+    humedad = random.uniform(30, 50)
     # Publicar los valores en los temas MQTT correspondientes
-    client.publish(temp_topic, temperatura)
+    client.publish(hum_topic, humedad)
     # Esperar 5 segundos antes de la siguiente lectura
     time.sleep(5)

@@ -2,7 +2,7 @@
 `py -m venv env`
 
 **Install libraries**
-`py -m pip install requirements.txt`
+`pip install -r requirements.txt`
 
 **Set environment variable**
 `set FLASK_APP=app.py`

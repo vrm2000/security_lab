@@ -29,6 +29,6 @@ class Sensor:
         # Bucle principal
         while True:
             # Publicar los valores en los temas MQTT correspondientes
-            self.client.publish(self.topic, self.output_function)
+            self.client.publish(self.topic, self.output_function())
             # Esperar 5 segundos antes de la siguiente lectura
             time.sleep(5)

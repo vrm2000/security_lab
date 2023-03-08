@@ -9,3 +9,6 @@
 
 **Run project**
 `flask run`
+
+**Resources**
+[MQTT in Flask](https://www.emqx.com/en/blog/how-to-use-mqtt-in-flask)

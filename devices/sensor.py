@@ -1,13 +1,16 @@
+import os
 import time
 import paho.mqtt.client as mqtt
 
 class Sensor:
     def __init__(self, topic, output_function):
+        # load .env file
+        load_dotenv()
         # Credenciales de conexión
-        self.host = "myinstance-security.cloud.shiftr.io"
+        self.host = os.getenv("MQTT_BROKER_URL")
         self.port = 1883
-        self.username = "myinstance-security"
-        self.password = "SygyutF8JyLDfz5D"
+        self.username = os.getenv("MQTT_USERNAME")
+        self.password = os.getenv("MQTT_PASSWORD")
         # Temas MQTT
         self.topic = f"security/{topic}"
         self.output_function = output_function

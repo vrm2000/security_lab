@@ -1,17 +1,22 @@
 import os
 import pickle
+from argparse import ArgumentParser
 from flask import Flask, render_template
 from flask_mqtt import Mqtt
 from flask_socketio import SocketIO
 from dotenv import load_dotenv
 from cryptography.hazmat.primitives import serialization
 
-
 client_public_key_topic = "key_exchange/client_public_key"
 server_public_key_topic = "key_exchange/server_public_key"
 
-load_dotenv()
+# parse arguments
+parser = ArgumentParser()
+parser.add_argument("-t", "--topics", dest="topics", nargs="+",
+                    required=True, help="the topics that you want to subscribe to")
+args = parser.parse_args()
 
+load_dotenv()
 app = Flask(__name__)
 app.config['SECRET'] = 'my secret key'
 app.config['TEMPLATES_AUTO_RELOAD'] = True
@@ -27,6 +32,7 @@ socketio = SocketIO(app)
 
 peer_keys_dict = dict()
 
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -35,7 +41,10 @@ def index():
 def handle_connect(client, userdata, flags, rc):
     if rc == 0:
         print('Connected successfully')
-        mqtt.subscribe("security/*")
+        # subscribe to topics given by command line arguments
+        for topic in args.topics:
+            mqtt.subscribe(topic)
+        # subscribe to topic for key exchange
         mqtt.subscribe(client_public_key_topic)
     else:
         print('Bad connection. Code:', rc)

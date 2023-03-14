@@ -1,9 +1,8 @@
-from sensor import Sensor
-import random
+import subprocess
+import sys
 
 def main():
-    humidity_sensor = Sensor(topic="humidity", output_function=lambda : random.uniform(30, 50))
-    humidity_sensor.run()
+    subprocess.run([sys.executable, "devices/sensor.py", "-t", "humidity", "--min", "30", "--max", "50"])
 
 if __name__ == "__main__":
     main()

@@ -1,9 +1,8 @@
-from sensor import Sensor
-import random
+import subprocess
+import sys
 
 def main():
-    movement_sensor = Sensor(topic="movement", output_function=lambda : random.choice([True, False]))
-    movement_sensor.run()
+    subprocess.run([sys.executable, "devices/sensor.py", "-t", "movement", "-ot", "boolean"])
 
 if __name__ == "__main__":
     main()

@@ -50,7 +50,30 @@ def register_device(message, client, mac):
     nonce = bytes.fromhex(decoded_message["nonce"])
     shared_key = handle_sensor_public_key(serialized_sensor_public_key, mac)
     devices[mac] =  {"shared_key": shared_key ,"nonce": nonce}
-    print(f"Received new login from device {mac}")
+    hkdf = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=None,
+            info=b'',
+            backend=default_backend()
+        )
+    sharedKeyForSignature = hkdf.derive(shared_key)
+
+    # generate signature hmac to compare with device's
+    signature = hmac.new(sharedKeyForSignature, (f"Soy un sensor con mac {mac}").encode("UTF-8"), digestmod="sha256").digest()
+
+    # check if device is who it claims to be
+    try:
+        if signature == decoded_message["signature"]:
+            print(f"Sensor {mac} succesfully authenticated")
+            print(f"Received new login from device {mac}")
+            devices[mac]["authenticated"] = True
+        else:
+            print("Invalid HMAC Authentication")
+            devices[mac]["authenticated"] = False
+    except:
+        print("An exception occurred tryng to authenticate...")
+
 
 def handle_sensor_public_key(serialized_server_public_key, mac):
         # deserialize server public key
@@ -129,17 +152,21 @@ def handle_mqtt_message(client, userdata, message):
         if not(mac in devices.keys()):
             register_device(message.payload, client, mac)
         return
+
     # Identificamos el tipo de sensor y donde debe mandar los datos en la interfaz web
     submit = identify_sensor(topic[1])
     mac = topic[2]
-    plaintext = decipher_data(message, mac)
+    if devices[mac]["authenticated"] == True:
+        plaintext = decipher_data(message, mac)
 
-    print(f'({mac}) Received new {submit[3:len(submit)-4].lower()} value: {plaintext}')
-    data = dict(
-        topic = message.topic,
-        payload = plaintext
-    )
-    socketio.emit(submit, data=data)
+        print(f'({mac}) Received new {submit[3:len(submit)-4].lower()} value: {plaintext}')
+        data = dict(
+            topic = message.topic,
+            payload = plaintext
+        )
+        socketio.emit(submit, data=data)
+    else:
+        print(f"Sensor {mac} not authenticated...")
 
 client = None
 

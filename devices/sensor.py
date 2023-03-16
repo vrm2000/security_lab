@@ -58,8 +58,21 @@ class Sensor:
         private_key, public_key, serialized_public_key = self.generate_keys(parameters)
         # get shared key
         shared_key = private_key.exchange(other_public_key)
-        # publish own public key to server
-        credentials = {"pubkey": serialized_public_key, "nonce": str(self.nonce.hex())}
+
+        hkdf = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=None,
+            info=b'',
+            backend=default_backend()
+        )
+        sharedKeyForSignature = hkdf.derive(shared_key)
+
+        # generate signature hmac to authenticate device
+        signature = hmac.new(sharedKeyForSignature, (f"Soy un sensor con mac {self.mac}").encode("UTF-8"), digestmod="sha256").digest()
+
+        # publish own public key to server and signature
+        credentials = {"pubkey": serialized_public_key, "nonce": str(self.nonce.hex()), "signature": signature}
         client.publish(f'newDevice/{self.mac}', bson.dumps(credentials))
         print("Published own public key to platform")
         return private_key, public_key, shared_key, other_public_key

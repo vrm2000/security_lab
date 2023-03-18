@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 import paho.mqtt.client as mqtt
 from argparse import ArgumentParser
 import time, hmac, random, os, bson, pickle
+from datetime import datetime
 from cryptography.hazmat.primitives.asymmetric import dh
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.backends import default_backend
@@ -22,6 +23,7 @@ class Sensor:
         self.topic = f"security/{topic}"
         self.output_function = output_function
         self.nonce = os.urandom(12)
+        self.stopPublish = True
 
         if hasattr(args, 'encryption_algorithm'):
             self.algorithm = f"ae/{args.encryption_algorithm.lower()}"
@@ -34,7 +36,7 @@ class Sensor:
         self.type_sensor = args.topic
         self.mac = self.rand_mac()
         self.client = self.connect()
-        self.shared_key = None
+        self.key = None
         self.private_key, self.public_key = None, None
         self.other_public_key = None
         self.connection_stablished = False
@@ -85,11 +87,25 @@ class Sensor:
         credentials = {"pubkey": serialized_public_key, "nonce": str(self.nonce.hex()), "signature": signature, "algorithm": self.algorithm.encode("utf-8")}
         client.publish(f'newDevice/{self.mac}', bson.dumps(credentials))
         print("Published own public key to platform")
-        return private_key, public_key, shared_key, other_public_key
+
+        # Ajustamos la longitud de la clave secreta para que cumpla los requisitos de longitud del algoritmo escogido
+        hkdf = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=None,
+            info=b'',
+            backend=default_backend()
+        )
+        self.key = hkdf.derive(shared_key)
+        self.cipher = self.chooseEncryptionAlgorithm(self.key)
+        return private_key, public_key, other_public_key
 
     def on_message(self, client, userdata, message):
         if message.topic == "platform":
-            self.private_key, self.public_key, self.shared_key, self.other_public_key = self.diffie_hellman(client, message.payload)
+            self.stopPublish = True
+            self.private_key, self.public_key, self.other_public_key = self.diffie_hellman(client, message.payload)
+            time.sleep(1)
+            self.stopPublish = False
             return
         else:
             print(message.topic)
@@ -114,13 +130,13 @@ class Sensor:
         )
     def encrypt_publish_data(self, cipher, message, additional_data):
         encription = self.algorithm.split("/")
-
         encryptor = cipher.encryptor()
-
         if encription[0] == "aead":
             encryptor.authenticate_additional_data(additional_data)
         ciphertext = encryptor.update(message.encode("utf-8"))
         ciphertext += encryptor.finalize()
+        fecha = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        print(fecha)
         if encription[1] == "aes":
             authentication_tag = encryptor.tag
             self.client.publish(f"{self.topic}/{self.mac}", ciphertext + authentication_tag)
@@ -130,7 +146,6 @@ class Sensor:
         # Publicar los valores en los temas MQTT correspondientes
         print(f"({self.mac}) New {self.type_sensor} value: {message}")
          
-
     def generateNewMessage(self):
         message = str(self.output_function())
         if self.type_sensor in ["humidity", "temperature"]:
@@ -158,37 +173,23 @@ class Sensor:
             else:
                 return 'Authenticated encyption and additional data algorithm not found!'
 
-
-
-        
-
     def run(self,args):
-        while self.shared_key == None:
+        while self.key == None:
             self.client.loop()
             time.sleep(1)
         print("Conection stablished with platform")
-        # Ajustamos la longitud de la clave secreta para que cumpla los requisitos de longitud del algoritmo escogido
-        hkdf = HKDF(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=None,
-            info=b'',
-            backend=default_backend()
-        )
-        key = hkdf.derive(self.shared_key)
-        cipher = self.chooseEncryptionAlgorithm(key)
+        cipher = self.cipher
         self.type_sensor = args.topic
         self.topic = f"security/{self.type_sensor}"
-        additional_data = hmac.new(key, self.mac.encode("utf-8"), digestmod="sha256").digest()
+        # Generamos los datos adicionales que será la MAC del dispositivo
+        additional_data = hmac.new(self.key, self.mac.encode("utf-8"), digestmod="sha256").digest()
         # Bucle principal
-        while True:
-            # Como additional data vamos a usar la MAC
+        while self.stopPublish == False:
+            self.client.loop()
             message = self.generateNewMessage()
-            self.encrypt_publish_data(cipher, message, additional_data)
+            self.encrypt_publish_data(self.cipher, message, additional_data)
             # Esperar 5 segundos antes de la siguiente lectura
             time.sleep(args.publish_timeout)
-
-
 
 def main():
     parser = ArgumentParser()

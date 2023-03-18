@@ -2,14 +2,15 @@ import paho.mqtt.client as mqtt
 from dotenv import load_dotenv
 from flask_socketio import SocketIO
 from argparse import ArgumentParser
+from datetime import datetime, timedelta
 from flask import Flask, render_template
 from cryptography.exceptions import InvalidTag
-import os, bson,json, re, hmac, pickle, logging
 from cryptography.hazmat.primitives.asymmetric import dh
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives import serialization, hashes
+import os, bson, hmac, pickle, logging, threading, time
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 # parse arguments
@@ -34,13 +35,23 @@ app.config['MQTT_TLS_ENABLED'] = False
 logging.getLogger('socketio').setLevel(logging.ERROR)
 logging.getLogger('engineio').setLevel(logging.ERROR)
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
-
 socketio = SocketIO(app)
 # Diccionario con todos los dispositivos conectados y que han hecho intercambio Diffie-Hellman.
 # Contiene clave compartida (shared_key) y el nonce de la comunicación (nonce)
 devices = dict()
 # Diccionario que contiene claves público (pubkey) y privada (privkey) de la plataforma.
 platform_keys = dict()
+
+def keyRotation():
+    last_key_update = datetime.now()
+    while True:
+        update_time = datetime.now() - last_key_update
+        if update_time > timedelta(seconds=30):
+            last_key_update =  datetime.now()
+            start_diffie_hellman()
+        else:
+            time.sleep(10)
+
 
 @app.route('/')
 def index():
@@ -120,14 +131,7 @@ def handle_sensor_public_key(serialized_server_public_key, mac):
         shared_key = platform_keys["privkey"].exchange(server_public_key)
         return shared_key
 
-def start_platform_configuration():
-    print("Subscribing to main topics")
-    for topic in args.topics:
-            t = topic
-            if topic.lower() == "all":
-                t = "*"
-            client.subscribe(f"security/{t}/*")
-    client.subscribe("newDevice/*")
+def start_diffie_hellman():
     print("Generating keys...")
     parameters = dh.generate_parameters(generator=args.key_generator, key_size=args.key_size)
     private_key = parameters.generate_private_key()
@@ -147,6 +151,17 @@ def start_platform_configuration():
     client.publish("platform",pickled_data, retain = True)
     print("Public key published in topic")
 
+def start_platform_configuration():
+    print("Subscribing to main topics")
+    for topic in args.topics:
+            t = topic
+            if topic.lower() == "all":
+                t = "*"
+            client.subscribe(f"security/{t}/*")
+    client.subscribe("newDevice/*")
+    start_diffie_hellman()
+
+
 # On connect
 def handle_connect(client, userdata, flags, rc):
     if rc == 0:
@@ -158,16 +173,24 @@ def handle_connect(client, userdata, flags, rc):
 
 def decrypt_data(message, mac):
     key = devices[mac]["shared_key"]
-    cipher = devices[mac]["cipher"]
     encription = devices[mac]["encryption"]
+    cipher = devices[mac]["cipher"]
     algo = encription[1]
     encription = encription[0]
     decryptor = cipher.decryptor()
     # Se comprueba si hay additional data y se verifica
     if encription == "aead":
+        #timestamp = message.payload[-35:-16].decode("utf-8")
         # Decrypt and verify the ciphertext and additional data
         additional_data = hmac.new(key,mac.encode("utf-8"), digestmod="sha256").digest()
         decryptor.authenticate_additional_data(additional_data)
+    else:
+        #timestamp = message.payload[-20:].decode("utf-8")
+        fecha = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        print(fecha)
+    # timestamp = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+    #if timestamp < last_key_update:
+    #    return "NO"
     # Desencriptamos y obtenemos etiqueta de autenticación
     if algo == "aes":
         # Obtenemos etiqueta de autenticación del sensor
@@ -193,8 +216,7 @@ def handle_mqtt_message(client, userdata, message):
     topic = message.topic.split("/")
     if topic[0] == "newDevice":
         mac = topic[1]
-        if not(mac in devices.keys()):
-            register_device(message.payload, client, mac)
+        register_device(message.payload, client, mac)
         return
 
     # Identificamos el tipo de sensor y donde debe mandar los datos en la interfaz web
@@ -202,13 +224,13 @@ def handle_mqtt_message(client, userdata, message):
     mac = topic[2]
     if devices[mac]["authenticated"] == True:
         plaintext = decrypt_data(message, mac)
-
-        print(f'({mac}) Received new {submit[3:len(submit)-4].lower()} value: {plaintext}')
-        data = dict(
-            topic = message.topic,
-            payload = plaintext
-        )
-        socketio.emit(submit, data=data)
+        if plaintext != "NO":
+            print(f'({mac}) Received new {submit[3:len(submit)-4].lower()} value: {plaintext}')
+            data = dict(
+                topic = message.topic,
+                payload = plaintext
+            )
+            socketio.emit(submit, data=data)
     else:
         print(f"Sensor {mac} not authenticated...")
 
@@ -224,5 +246,8 @@ if __name__ == '__main__':
     client.on_connect = handle_connect
     client.connect(host, port, 60)
     client.on_message = handle_mqtt_message
+    thread = threading.Thread(target=keyRotation)
+    thread.daemon = True
+    thread.start()
     client.loop_start()
     socketio.run(app, host='127.0.0.1', port=5000)

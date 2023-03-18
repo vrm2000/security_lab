@@ -31,7 +31,7 @@ This can also just be changed in the python files for each sensor
 ```
 python devices/sensor.py -t TOPIC [-kt KEY_TIMEOUT]
                  [-pt PUBLISH_TIMEOUT] [-kea {DH,HADH,ECDH}]
-                 [-ea {AE,AEAD}] [-ot {float,boolean}] [--min MIN]     
+                 [-ae {aes, camellia, chacha20}] [-aead {aes, chacha20}] [-ot {float,boolean}] [--min MIN]     
                  [--max MAX] [-g {2,5}] [-ks {512,1024,2048}]
 The following arguments are required: -t/--topic
 ```

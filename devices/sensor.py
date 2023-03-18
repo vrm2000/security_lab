@@ -1,9 +1,10 @@
 from dotenv import load_dotenv
 import paho.mqtt.client as mqtt
 from argparse import ArgumentParser
-import time, hmac, random, os, bson, pickle
+import time, hmac, random, os, bson
 from datetime import datetime
 from cryptography.hazmat.primitives.asymmetric import dh
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -43,34 +44,53 @@ class Sensor:
 
     # Función de conexión con shiftr.io
     def on_connect(self, client, userdata, flags, rc):
-        self.client.subscribe("platform")
+        self.client.subscribe("platform/*")
         print("Conectado a shiftr.io con código de resultado: "+str(rc))
 
-    def generate_keys(self,parameters):
-        print("Generating keys...")
+    def generate_dh_keys(self, parameters):
         private_key = parameters.generate_private_key()
         public_key = private_key.public_key()
         serialized_public_key = public_key.public_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PublicFormat.SubjectPublicKeyInfo)
-        print("Done generating keys")
         return private_key, public_key, serialized_public_key
     
+    def generate_ecdh_keys(self):
+        # Generate an ephemeral private key for this exchange
+        ephemeral_private_key = ec.generate_private_key(ec.SECP256R1())
+        ephemeral_public_key = ephemeral_private_key.public_key()
+        serialized_ephemeral_public_key = ephemeral_public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo)
+        return ephemeral_private_key, ephemeral_public_key, serialized_ephemeral_public_key
     
-
-    def diffie_hellman(self, client, payload):
+    def diffie_hellman(self, client, payload, algorithm):
         # first receive the parameters and the other's public key
-        serialized_parameters, serialized_other_public_key = pickle.loads(payload)
-        # load parameters and other's public key
-        parameters = serialization.load_pem_parameters(serialized_parameters)
-        other_public_key = serialization.load_pem_public_key(
-            serialized_other_public_key)
-        # generate own key pair
-        private_key, public_key, serialized_public_key = self.generate_keys(parameters)
-        # get shared key
-        shared_key = private_key.exchange(other_public_key)
-
-        # Diffie hellman with HMAC
+        print("Generating keys...")
+        if algorithm == "hadh":
+            decoded_message = bson.loads(payload)
+            serialized_parameters = decoded_message["serialized_parameters"]
+            serialized_other_public_key = decoded_message["serialized_other_public_key"]
+            # load parameters and other's public key
+            parameters = serialization.load_pem_parameters(serialized_parameters)
+            other_public_key = serialization.load_pem_public_key(
+                serialized_other_public_key)
+            # generate own key pair
+            private_key, public_key, serialized_public_key = self.generate_dh_keys(parameters)
+            # get shared secret
+            shared_secret = private_key.exchange(other_public_key)
+        elif algorithm == "ecdh":
+            decoded_message = bson.loads(payload)
+            serialized_other_public_key = decoded_message["serialized_other_public_key"]
+            # Extract the received public key from the message
+            other_public_key = serialization.load_pem_public_key(
+                serialized_other_public_key)
+            private_key, public_key, serialized_public_key = self.generate_ecdh_keys()
+            # Compute the shared secret using the received public key and the ephemeral private key
+            shared_secret = private_key.exchange(ec.ECDH(), other_public_key)
+        else:
+            raise ValueError(f"key encryption algorithm {algorithm} not supported.")
+        
         hkdf = HKDF(
             algorithm=hashes.SHA256(),
             length=32,
@@ -78,10 +98,10 @@ class Sensor:
             info=b'',
             backend=default_backend()
         )
-        sharedKeyForSignature = hkdf.derive(shared_key)
+        shared_key = hkdf.derive(shared_secret)
 
         # generate signature hmac to authenticate device
-        signature = hmac.new(sharedKeyForSignature, (f"Soy un sensor con mac {self.mac}").encode("UTF-8"), digestmod="sha256").digest()
+        signature = hmac.new(shared_key, (f"Soy un sensor con mac {self.mac}").encode("UTF-8"), digestmod="sha256").digest()
 
         # publish own public key to server and signature
         credentials = {"pubkey": serialized_public_key, "nonce": str(self.nonce.hex()), "signature": signature, "algorithm": self.algorithm.encode("utf-8")}
@@ -101,10 +121,15 @@ class Sensor:
         return private_key, public_key, other_public_key
 
     def on_message(self, client, userdata, message):
-        if message.topic == "platform":
+        topic_split = message.topic.split('/')
+        if len(topic_split) == 2 and topic_split[0] == "platform":
             self.stopPublish = True
-            self.private_key, self.public_key, self.other_public_key = self.diffie_hellman(client, message.payload)
-            time.sleep(1)
+            algorithm = topic_split[1]
+            self.private_key, self.public_key, self.shared_key, self.other_public_key = self.diffie_hellman(
+                client,
+                message.payload,
+                algorithm
+            )
             self.stopPublish = False
             return
         else:
@@ -200,9 +225,6 @@ def main():
         default=300, help="the time after which we need to regenerate the encryption keys in seconds")
     parser.add_argument("-pt", "--publish_timeout", dest="publish_timeout", type=float,
         default=5, help="the time after which the sensor will send new data in seconds")
-    #  TODO: NOT IMPLEMENTED YET
-    parser.add_argument("-kea", "--key_exchange_algorithm", dest="key_exchange_algorithm",
-        choices=["DH", "HADH", "ECDH"], default="DH", help="the used algorithm for key exchange")
     # TODO: NOT IMPLEMENTED YET
     parser.add_argument("-ae", "--encryption_algorithm", dest="encryption_algorithm",
         choices=["aes", "camellia", "chacha20"], default="aes", help="the algorithm for authenticated encryption of messages")

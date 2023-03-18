@@ -4,6 +4,7 @@ from flask_socketio import SocketIO
 from argparse import ArgumentParser
 from flask import Flask, render_template
 import os, bson,json, re, hmac, pickle, logging
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric import dh
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.backends import default_backend
@@ -14,7 +15,10 @@ from cryptography.hazmat.primitives import serialization, hashes
 parser = ArgumentParser()
 parser.add_argument("-t", "--topics", dest="topics", nargs="+",
                     required=True, help="the topics that you want to subscribe to")
-parser.add_argument("-g", "--key_generator", dest="key_generator", type=int, choices=[2, 5],
+#  TODO: NOT IMPLEMENTED YET
+parser.add_argument("-kea", "--key_exchange_algorithm", dest="key_exchange_algorithm",
+    choices=["HADH", "ECDH"], default="HADH", help="the used algorithm for key exchange")
+parser.add_argument("-kg", "--key_generator", dest="key_generator", type=int, choices=[2, 5],
                         default=2, help="g value for diffie hellman key generation")
 parser.add_argument("-ks", "--key_size", dest="key_size", type=int, choices=[512, 1024, 2048],
                         default=512, help="key size for diffie hellman key generation")
@@ -50,17 +54,9 @@ def register_device(message, client, mac):
     nonce = bytes.fromhex(decoded_message["nonce"])
     shared_key = handle_sensor_public_key(serialized_sensor_public_key, mac)
     devices[mac] =  {"shared_key": shared_key ,"nonce": nonce}
-    hkdf = HKDF(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=None,
-            info=b'',
-            backend=default_backend()
-        )
-    sharedKeyForSignature = hkdf.derive(shared_key)
 
     # generate signature hmac to compare with device's
-    signature = hmac.new(sharedKeyForSignature, (f"Soy un sensor con mac {mac}").encode("UTF-8"), digestmod="sha256").digest()
+    signature = hmac.new(shared_key, (f"Soy un sensor con mac {mac}").encode("UTF-8"), digestmod="sha256").digest()
 
     # check if device is who it claims to be
     try:
@@ -75,10 +71,24 @@ def register_device(message, client, mac):
         print("An exception occurred tryng to authenticate...")
 
 
-def handle_sensor_public_key(serialized_server_public_key, mac):
-        # deserialize server public key
-        server_public_key = serialization.load_pem_public_key(serialized_server_public_key)
-        shared_key = platform_keys["privkey"].exchange(server_public_key)
+def handle_sensor_public_key(serialized_sensor_public_key, mac):
+        # deserialize sensor public key
+        sensor_public_key = serialization.load_pem_public_key(serialized_sensor_public_key)
+        if args.key_exchange_algorithm == "HADH":
+            shared_secret = platform_keys["privkey"].exchange(sensor_public_key)
+        elif args.key_exchange_algorithm == "ECDH":
+            shared_secret = platform_keys["privkey"].exchange(ec.ECDH(), sensor_public_key)
+        else:
+            raise ValueError("Key exchange algorithm not supported")
+            
+        hkdf = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=None,
+            info=b'',
+            backend=default_backend()
+        )
+        shared_key = hkdf.derive(shared_secret)
         return shared_key
 
 def start_platform_configuration():
@@ -91,23 +101,40 @@ def start_platform_configuration():
             client.subscribe(f"security/{t}/*")
     client.subscribe("newDevice/*")
     print("Generating keys...")
-    parameters = dh.generate_parameters(generator=args.key_generator, key_size=args.key_size)
-    private_key = parameters.generate_private_key()
-    public_key = private_key.public_key()
+
+    if args.key_exchange_algorithm == "HADH":
+        parameters = dh.generate_parameters(generator=args.key_generator, key_size=args.key_size)
+        private_key = parameters.generate_private_key()
+        public_key = private_key.public_key()
+        serialized_parameters = parameters.parameter_bytes(
+            serialization.Encoding.PEM,
+            serialization.ParameterFormat.PKCS3
+        )
+        serialized_public_key = public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+        pickled_data = pickle.dumps((serialized_parameters, serialized_public_key))
+    elif args.key_exchange_algorithm == "ECDH":
+        # Generate an ephemeral private key for this exchange
+        private_key = ec.generate_private_key(ec.SECP256R1())
+        public_key = private_key.public_key()
+        serialized_public_key = public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+        pickled_data = pickle.dumps(serialized_public_key)
+    else:
+        raise ValueError(f"Key exchange algorithm '{args.key_exchange_algorithm}' not supported")
+    
     platform_keys["pubkey"] = public_key
     platform_keys["privkey"] = private_key
-    serialized_parameters = parameters.parameter_bytes(
-        serialization.Encoding.PEM,
-        serialization.ParameterFormat.PKCS3
-    )
-    serialized_public_key = public_key.public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo
-    )
-    pickled_data = pickle.dumps((serialized_parameters, serialized_public_key))
+        
     # publish own public key to server
-    client.publish("platform",pickled_data, retain = True)
-    print("Public key published in topic")
+    key_exchange_topic = f"platform/{args.key_exchange_algorithm.lower()}"
+    
+    client.publish(key_exchange_topic, pickled_data, retain=True)
+    print(f"Public key published in topic {key_exchange_topic}")
 
 # On connect
 def handle_connect(client, userdata, flags, rc):

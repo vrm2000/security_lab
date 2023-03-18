@@ -3,12 +3,14 @@ from dotenv import load_dotenv
 from flask_socketio import SocketIO
 from argparse import ArgumentParser
 from flask import Flask, render_template
+from cryptography.exceptions import InvalidTag
 import os, bson,json, re, hmac, pickle, logging
 from cryptography.hazmat.primitives.asymmetric import dh
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 # parse arguments
 parser = ArgumentParser()
@@ -44,12 +46,49 @@ platform_keys = dict()
 def index():
     return render_template('index.html')
 
+
+def chooseEncryptionAlgorithm(algo, key, nonce):
+        algo = algo.split("/")
+        if algo[0] == 'ae':
+            case = algo[1]
+            if case == "aes":
+                return Cipher(algorithm=algorithms.AES256(key), mode=modes.GCM(nonce), backend=default_backend())
+            elif case == "camellia":
+                return Cipher(algorithm=algorithms.Camellia(key), mode=modes.CTR(nonce), backend=default_backend())
+            elif case == "chacha20":
+                return Cipher(algorithm=algorithms.ChaCha20(key,nonce),mode=None, backend=default_backend())
+            else:
+                return 'Authenticated encyption algorithm not found!'
+        elif algo[0] == 'aead':
+            case = algo[1]
+            if case == "aes":
+                return Cipher(algorithm=algorithms.AES256(key), mode=modes.GCM(nonce), backend=default_backend())
+            elif case == "chacha20":
+                return Cipher(algorithm=algorithms.ChaCha20(key, nonce),mode=None, backend=default_backend())
+            else:
+                return 'Authenticated encyption and additional data algorithm not found!'
+
+
 def register_device(message, client, mac):
     decoded_message = bson.loads(message)
     serialized_sensor_public_key = decoded_message["pubkey"]
     nonce = bytes.fromhex(decoded_message["nonce"])
+    algo = decoded_message["algorithm"].decode("utf-8")
+
     shared_key = handle_sensor_public_key(serialized_sensor_public_key, mac)
-    devices[mac] =  {"shared_key": shared_key ,"nonce": nonce}
+
+    hkdf = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=None,
+            info=b'',
+            backend=default_backend()
+        )
+    key = hkdf.derive(shared_key)
+
+    cipher = chooseEncryptionAlgorithm(algo,key, nonce)
+    algo = algo.split("/")
+    devices[mac] =  {"shared_key": key ,"nonce": nonce, "cipher": cipher, "encryption": algo}
     hkdf = HKDF(
             algorithm=hashes.SHA256(),
             length=32,
@@ -87,7 +126,6 @@ def start_platform_configuration():
             t = topic
             if topic.lower() == "all":
                 t = "*"
-            print(t, topic)
             client.subscribe(f"security/{t}/*")
     client.subscribe("newDevice/*")
     print("Generating keys...")
@@ -118,22 +156,28 @@ def handle_connect(client, userdata, flags, rc):
     else:
         print('Bad connection. Code:', rc)
 
-def decipher_data(message, mac):
-    shared_key = devices[mac]["shared_key"]
-    nonce = devices[mac]["nonce"]
-    hkdf = HKDF(
-            algorithm=hashes.SHA256(),
-            length=16,
-            salt=None,
-            info=b'',
-            backend=default_backend()
-        )
-    key = hkdf.derive(shared_key)
-    cipher = AESGCM(key)
-    # Decrypt and verify the ciphertext and additional data
-    additional_data = hmac.new(key,shared_key, digestmod="sha256").digest()
-    plaintext = cipher.decrypt(nonce, message.payload, associated_data = additional_data).decode("utf-8")
-    return plaintext
+def decrypt_data(message, mac):
+    key = devices[mac]["shared_key"]
+    cipher = devices[mac]["cipher"]
+    encription = devices[mac]["encryption"]
+    algo = encription[1]
+    encription = encription[0]
+    decryptor = cipher.decryptor()
+    # Se comprueba si hay additional data y se verifica
+    if encription == "aead":
+        # Decrypt and verify the ciphertext and additional data
+        additional_data = hmac.new(key,mac.encode("utf-8"), digestmod="sha256").digest()
+        decryptor.authenticate_additional_data(additional_data)
+    # Desencriptamos y obtenemos etiqueta de autenticación
+    if algo == "aes":
+        # Obtenemos etiqueta de autenticación del sensor
+        tag = message.payload[-16:]
+        # Desciframos y comprobamos etiqueta de autenticación
+        plaintext = decryptor.update( message.payload[:-16]) + decryptor.finalize_with_tag(tag)
+    else:
+        plaintext = decryptor.update( message.payload)
+        
+    return plaintext.decode("utf-8")
 
 def identify_sensor(message):
     if message == "humidity":
@@ -157,7 +201,7 @@ def handle_mqtt_message(client, userdata, message):
     submit = identify_sensor(topic[1])
     mac = topic[2]
     if devices[mac]["authenticated"] == True:
-        plaintext = decipher_data(message, mac)
+        plaintext = decrypt_data(message, mac)
 
         print(f'({mac}) Received new {submit[3:len(submit)-4].lower()} value: {plaintext}')
         data = dict(

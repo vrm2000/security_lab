@@ -7,6 +7,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 
 class Sensor:
@@ -20,14 +21,22 @@ class Sensor:
         # Temas MQTT
         self.topic = f"security/{topic}"
         self.output_function = output_function
+        self.nonce = os.urandom(12)
 
+        if hasattr(args, 'encryption_algorithm'):
+            self.algorithm = f"ae/{args.encryption_algorithm.lower()}"
+            if args.encryption_algorithm.lower() == "camellia" or args.encryption_algorithm.lower() == "chacha20":
+                self.nonce = os.urandom(16)
+        elif hasattr(args, 'encryption_algorithm_additionasl_data'):
+            self.algorithm = f"aead/{args.encryption_algorithm_additional_data.lower()}"
+        else:
+            self.algorithm = "ea/aes"
         self.type_sensor = args.topic
         self.mac = self.rand_mac()
         self.client = self.connect()
         self.shared_key = None
         self.private_key, self.public_key = None, None
         self.other_public_key = None
-        self.nonce = os.urandom(12)
         self.connection_stablished = False
 
     # Función de conexión con shiftr.io
@@ -59,6 +68,7 @@ class Sensor:
         # get shared key
         shared_key = private_key.exchange(other_public_key)
 
+        # Diffie hellman with HMAC
         hkdf = HKDF(
             algorithm=hashes.SHA256(),
             length=32,
@@ -72,7 +82,7 @@ class Sensor:
         signature = hmac.new(sharedKeyForSignature, (f"Soy un sensor con mac {self.mac}").encode("UTF-8"), digestmod="sha256").digest()
 
         # publish own public key to server and signature
-        credentials = {"pubkey": serialized_public_key, "nonce": str(self.nonce.hex()), "signature": signature}
+        credentials = {"pubkey": serialized_public_key, "nonce": str(self.nonce.hex()), "signature": signature, "algorithm": self.algorithm.encode("utf-8")}
         client.publish(f'newDevice/{self.mac}', bson.dumps(credentials))
         print("Published own public key to platform")
         return private_key, public_key, shared_key, other_public_key
@@ -81,8 +91,8 @@ class Sensor:
         if message.topic == "platform":
             self.private_key, self.public_key, self.shared_key, self.other_public_key = self.diffie_hellman(client, message.payload)
             return
-        self.shared_key = self.handle_server_public_key(message.payload)
-        self.exchanged_keys = True
+        else:
+            print(message.topic)
 
     def connect(self) -> mqtt.Client:
         # Conexión con shiftr.io
@@ -103,16 +113,54 @@ class Sensor:
             random.randint(0, 255)
         )
     def encrypt_publish_data(self, cipher, message, additional_data):
-        ciphertext = cipher.encrypt(self.nonce, message.encode("utf-8"), additional_data)
+        encription = self.algorithm.split("/")
+
+        encryptor = cipher.encryptor()
+
+        if encription[0] == "aead":
+            encryptor.authenticate_additional_data(additional_data)
+        ciphertext = encryptor.update(message.encode("utf-8"))
+        ciphertext += encryptor.finalize()
+        if encription[1] == "aes":
+            authentication_tag = encryptor.tag
+            self.client.publish(f"{self.topic}/{self.mac}", ciphertext + authentication_tag)
+        else:
+            self.client.publish(f"{self.topic}/{self.mac}", ciphertext)
+
         # Publicar los valores en los temas MQTT correspondientes
         print(f"({self.mac}) New {self.type_sensor} value: {message}")
-        self.client.publish(f"{self.topic}/{self.mac}", ciphertext) 
+         
 
     def generateNewMessage(self):
         message = str(self.output_function())
         if self.type_sensor in ["humidity", "temperature"]:
             message = message[0:4]
         return message
+    
+    def chooseEncryptionAlgorithm(self, key):
+        algo = self.algorithm.split("/")
+        if algo[0] == 'ae':
+            case = algo[1]
+            if case == "aes":
+                return Cipher(algorithm=algorithms.AES256(key), mode=modes.GCM(self.nonce), backend=default_backend())
+            elif case == "camellia":
+                return Cipher(algorithm=algorithms.Camellia(key), mode=modes.CTR(self.nonce), backend=default_backend())
+            elif case == "chacha20":
+                return Cipher(algorithm=algorithms.ChaCha20(key,self.nonce),mode=None, backend=default_backend())
+            else:
+                return 'Authenticated encyption algorithm not found!'
+        elif algo[0] == 'aead':
+            case = algo[1]
+            if case == "aes":
+                return Cipher(algorithm=algorithms.AES256(key), mode=modes.GCM(self.nonce), backend=default_backend())
+            elif case == "chacha20":
+                return Cipher(algorithm=algorithms.ChaCha20(key,self.nonce),mode=None,  backend=default_backend())
+            else:
+                return 'Authenticated encyption and additional data algorithm not found!'
+
+
+
+        
 
     def run(self,args):
         while self.shared_key == None:
@@ -122,16 +170,16 @@ class Sensor:
         # Ajustamos la longitud de la clave secreta para que cumpla los requisitos de longitud del algoritmo escogido
         hkdf = HKDF(
             algorithm=hashes.SHA256(),
-            length=16,
+            length=32,
             salt=None,
             info=b'',
             backend=default_backend()
         )
         key = hkdf.derive(self.shared_key)
-        cipher = AESGCM(key)
+        cipher = self.chooseEncryptionAlgorithm(key)
         self.type_sensor = args.topic
         self.topic = f"security/{self.type_sensor}"
-        additional_data = hmac.new(key, self.shared_key, digestmod="sha256").digest()
+        additional_data = hmac.new(key, self.mac.encode("utf-8"), digestmod="sha256").digest()
         # Bucle principal
         while True:
             # Como additional data vamos a usar la MAC
@@ -155,14 +203,16 @@ def main():
     parser.add_argument("-kea", "--key_exchange_algorithm", dest="key_exchange_algorithm",
         choices=["DH", "HADH", "ECDH"], default="DH", help="the used algorithm for key exchange")
     # TODO: NOT IMPLEMENTED YET
-    parser.add_argument("-ea", "--encryption_algorithm", dest="encryption_algorithm",
-        choices=["AE", "AEAD"], default="AEAD", help="the algorithm for message encryption")
+    parser.add_argument("-ae", "--encryption_algorithm", dest="encryption_algorithm",
+        choices=["aes", "camellia", "chacha20"], default="aes", help="the algorithm for authenticated encryption of messages")
+    parser.add_argument("-aead", "--encryption_algorithm_additional_data", dest="encryption_algorithm_additional_data",
+        choices=["aes", "chacha20"], default="aes", help="the algorithm for authenticated encryption and additional data of messages")
     parser.add_argument("-ot", "--output_type", dest="output_type",
         choices=["float", "boolean"], default="float", help="define the sensor's output type")
     parser.add_argument("--min", dest="min", type=float,
-        default=18, help="min output value")
+        default=18, help="min output value", required=False)
     parser.add_argument("--max", dest="max", type=float,
-        default=25, help="max output value")
+        default=25, help="max output value", required=False)
     args = parser.parse_args()
     if args.output_type == "float":
         output_function = lambda : random.uniform(args.min, args.max)

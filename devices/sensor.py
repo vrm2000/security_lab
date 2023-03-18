@@ -1,7 +1,7 @@
 from dotenv import load_dotenv
 import paho.mqtt.client as mqtt
 from argparse import ArgumentParser
-import time, hmac, random, os, bson, pickle
+import time, hmac, random, os, bson
 from cryptography.hazmat.primitives.asymmetric import dh
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -66,7 +66,9 @@ class Sensor:
         # first receive the parameters and the other's public key
         print("Generating keys...")
         if algorithm == "hadh":
-            serialized_parameters, serialized_other_public_key = pickle.loads(payload)
+            decoded_message = bson.loads(payload)
+            serialized_parameters = decoded_message["serialized_parameters"]
+            serialized_other_public_key = decoded_message["serialized_other_public_key"]
             # load parameters and other's public key
             parameters = serialization.load_pem_parameters(serialized_parameters)
             other_public_key = serialization.load_pem_public_key(
@@ -76,7 +78,8 @@ class Sensor:
             # get shared secret
             shared_secret = private_key.exchange(other_public_key)
         elif algorithm == "ecdh":
-            serialized_other_public_key = pickle.loads(payload)
+            decoded_message = bson.loads(payload)
+            serialized_other_public_key = decoded_message["serialized_other_public_key"]
             # Extract the received public key from the message
             other_public_key = serialization.load_pem_public_key(
                 serialized_other_public_key)

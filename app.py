@@ -4,7 +4,7 @@ from flask_socketio import SocketIO
 from argparse import ArgumentParser
 from flask import Flask, render_template
 from cryptography.exceptions import InvalidTag
-import os, bson,json, re, hmac, pickle, logging
+import os, bson, json, re, hmac, logging
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric import dh
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -143,7 +143,8 @@ def start_platform_configuration():
             encoding=serialization.Encoding.PEM,
             format=serialization.PublicFormat.SubjectPublicKeyInfo
         )
-        pickled_data = pickle.dumps((serialized_parameters, serialized_public_key))
+        encoded_data = {"serialized_parameters" : serialized_parameters, "serialized_public_key" : serialized_public_key}
+        encoded_data = bson.dumps(encoded_data)
     elif args.key_exchange_algorithm == "ECDH":
         # Generate an ephemeral private key for this exchange
         private_key = ec.generate_private_key(ec.SECP256R1())
@@ -152,7 +153,8 @@ def start_platform_configuration():
             encoding=serialization.Encoding.PEM,
             format=serialization.PublicFormat.SubjectPublicKeyInfo
         )
-        pickled_data = pickle.dumps(serialized_public_key)
+        encoded_data = {"serialized_parameters" : None, "serialized_public_key" : serialized_public_key}
+        encoded_data = bson.dumps(encoded_data)
     else:
         raise ValueError(f"Key exchange algorithm '{args.key_exchange_algorithm}' not supported")
     
@@ -162,7 +164,7 @@ def start_platform_configuration():
     # publish own public key to server
     key_exchange_topic = f"platform/{args.key_exchange_algorithm.lower()}"
     
-    client.publish(key_exchange_topic, pickled_data, retain=True)
+    client.publish(key_exchange_topic, encoded_data, retain=True)
     print(f"Public key published in topic {key_exchange_topic}")
 
 # On connect

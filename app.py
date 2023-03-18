@@ -44,7 +44,7 @@ platform_keys = dict()
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template('index.html', devices=devices.keys())
 
 
 def chooseEncryptionAlgorithm(algo, key, nonce):

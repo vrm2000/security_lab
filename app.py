@@ -42,7 +42,7 @@ platform_keys = dict()
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template('index.html', devices=devices.keys())
 
 def register_device(message, client, mac):
     decoded_message = bson.loads(message)

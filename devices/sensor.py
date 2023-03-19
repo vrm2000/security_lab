@@ -67,24 +67,20 @@ class Sensor:
     def diffie_hellman(self, client, payload, algorithm):
         # first receive the parameters and the other's public key
         print("Generating keys...")
-        if algorithm == "hadh":
-            decoded_message = bson.loads(payload)
-            serialized_parameters = decoded_message["serialized_parameters"]
-            serialized_other_public_key = decoded_message["serialized_other_public_key"]
-            # load parameters and other's public key
-            parameters = serialization.load_pem_parameters(serialized_parameters)
-            other_public_key = serialization.load_pem_public_key(
+        decoded_message = bson.loads(payload)
+        # load parameters and other's public key
+        serialized_other_public_key = decoded_message["serialized_public_key"]
+        # Extract the received public key from the message
+        other_public_key = serialization.load_pem_public_key(
                 serialized_other_public_key)
+        if algorithm == "hadh":
+            serialized_parameters = decoded_message["serialized_parameters"]
+            parameters = serialization.load_pem_parameters(serialized_parameters)
             # generate own key pair
             private_key, public_key, serialized_public_key = self.generate_dh_keys(parameters)
             # get shared secret
             shared_secret = private_key.exchange(other_public_key)
         elif algorithm == "ecdh":
-            decoded_message = bson.loads(payload)
-            serialized_other_public_key = decoded_message["serialized_other_public_key"]
-            # Extract the received public key from the message
-            other_public_key = serialization.load_pem_public_key(
-                serialized_other_public_key)
             private_key, public_key, serialized_public_key = self.generate_ecdh_keys()
             # Compute the shared secret using the received public key and the ephemeral private key
             shared_secret = private_key.exchange(ec.ECDH(), other_public_key)
@@ -98,10 +94,10 @@ class Sensor:
             info=b'',
             backend=default_backend()
         )
-        shared_key = hkdf.derive(shared_secret)
+        self.key = hkdf.derive(shared_secret)
 
         # generate signature hmac to authenticate device
-        signature = hmac.new(shared_key, (f"Soy un sensor con mac {self.mac}").encode("UTF-8"), digestmod="sha256").digest()
+        signature = hmac.new(self.key, (f"Soy un sensor con mac {self.mac}").encode("UTF-8"), digestmod="sha256").digest()
 
         # publish own public key to server and signature
         credentials = {"pubkey": serialized_public_key, "nonce": str(self.nonce.hex()), "signature": signature, "algorithm": self.algorithm.encode("utf-8")}
@@ -116,16 +112,15 @@ class Sensor:
             info=b'',
             backend=default_backend()
         )
-        self.key = hkdf.derive(shared_key)
         self.cipher = self.chooseEncryptionAlgorithm(self.key)
-        return private_key, public_key, other_public_key
 
     def on_message(self, client, userdata, message):
         topic_split = message.topic.split('/')
+        print(topic_split)
         if len(topic_split) == 2 and topic_split[0] == "platform":
             self.stopPublish = True
             algorithm = topic_split[1]
-            self.private_key, self.public_key, self.shared_key, self.other_public_key = self.diffie_hellman(
+            self.diffie_hellman(
                 client,
                 message.payload,
                 algorithm
@@ -160,8 +155,6 @@ class Sensor:
             encryptor.authenticate_additional_data(additional_data)
         ciphertext = encryptor.update(message.encode("utf-8"))
         ciphertext += encryptor.finalize()
-        fecha = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        print(fecha)
         if encription[1] == "aes":
             authentication_tag = encryptor.tag
             self.client.publish(f"{self.topic}/{self.mac}", ciphertext + authentication_tag)

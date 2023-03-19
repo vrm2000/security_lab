@@ -53,6 +53,7 @@ def keyRotation():
         update_time = datetime.now() - last_key_update
         if update_time > timedelta(seconds=30):
             last_key_update =  datetime.now()
+            print("********************************* Regenerating keys *********************************")
             start_diffie_hellman()
         else:
             time.sleep(10)
@@ -165,10 +166,13 @@ def start_diffie_hellman():
     
     platform_keys["pubkey"] = public_key
     platform_keys["privkey"] = private_key
-        
     # publish own public key to server
+    print(args.key_exchange_algorithm.lower())
     key_exchange_topic = f"platform/{args.key_exchange_algorithm.lower()}"
-    
+    if key_exchange_topic == "platform/ecdh":
+        client.publish("platform/hadh", "", retain=True)
+    else:
+        client.publish("platform/ecdh", "", retain=True)
     client.publish(key_exchange_topic, encoded_data, retain=True)
     print(f"Public key published in topic {key_exchange_topic}")
 
@@ -201,17 +205,10 @@ def decrypt_data(message, mac):
     decryptor = cipher.decryptor()
     # Se comprueba si hay additional data y se verifica
     if encription == "aead":
-        #timestamp = message.payload[-35:-16].decode("utf-8")
         # Decrypt and verify the ciphertext and additional data
         additional_data = hmac.new(key,mac.encode("utf-8"), digestmod="sha256").digest()
         decryptor.authenticate_additional_data(additional_data)
-    else:
-        #timestamp = message.payload[-20:].decode("utf-8")
-        fecha = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        print(fecha)
-    # timestamp = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
-    #if timestamp < last_key_update:
-    #    return "NO"
+
     # Desencriptamos y obtenemos etiqueta de autenticación
     if algo == "aes":
         # Obtenemos etiqueta de autenticación del sensor

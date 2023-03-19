@@ -7,19 +7,16 @@
 #### **Set environment variable**
 `set FLASK_APP=app.py`
 
-#### **Run project**
-`flask run`
-
 #### **Run server**
-I do not know why but `flask run` is not working for me... That is why I am currently running the app like this:
-`python app.py -t "humidity temperature"` in this case, the platform would only read two types of devices
-
-It is possible to connect directly to all topics:
-`python app.py -t "all"`
 ```
 python app.py -t TOPICS [TOPICS ...]
 The following arguments are required: -t/--topics
 ```
+For example:
+`python app.py -t "humidity temperature"` in this case, the platform would only read two types of devices
+
+It is possible to connect directly to all topics:
+`python app.py -t "all"`
 
 #### **Run sensor**
 - `python devices/humidity.py`

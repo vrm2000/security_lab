@@ -4,15 +4,13 @@ from flask_socketio import SocketIO
 from argparse import ArgumentParser
 from datetime import datetime, timedelta
 from flask import Flask, render_template
-from cryptography.exceptions import InvalidTag
-import os, bson, json, re, hmac, logging
+import os, bson, hmac, logging
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric import dh
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives import serialization, hashes
-import os, bson, hmac, pickle, logging, threading, time
+import os, bson, hmac, logging, threading, time
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 # parse arguments
@@ -26,6 +24,8 @@ parser.add_argument("-kg", "--key_generator", dest="key_generator", type=int, ch
                         default=2, help="g value for diffie hellman key generation")
 parser.add_argument("-ks", "--key_size", dest="key_size", type=int, choices=[512, 1024, 2048],
                         default=512, help="key size for diffie hellman key generation")
+parser.add_argument("-kt", "--key_timeout", dest="key_timeout", type=float,
+        default=300, help="the time after which we need to regenerate the encryption keys in seconds")
 args = parser.parse_args()
 
 load_dotenv()
@@ -51,7 +51,7 @@ def keyRotation():
     last_key_update = datetime.now()
     while True:
         update_time = datetime.now() - last_key_update
-        if update_time > timedelta(seconds=30):
+        if update_time > timedelta(seconds=args.key_timeout):
             last_key_update =  datetime.now()
             print("********************************* Regenerating keys *********************************")
             start_diffie_hellman()
@@ -167,16 +167,14 @@ def start_diffie_hellman():
     platform_keys["pubkey"] = public_key
     platform_keys["privkey"] = private_key
     # publish own public key to server
-    print(args.key_exchange_algorithm.lower())
     key_exchange_topic = f"platform/{args.key_exchange_algorithm.lower()}"
-    if key_exchange_topic == "platform/ecdh":
-        client.publish("platform/hadh", "", retain=True)
-    else:
-        client.publish("platform/ecdh", "", retain=True)
     client.publish(key_exchange_topic, encoded_data, retain=True)
     print(f"Public key published in topic {key_exchange_topic}")
 
 def start_platform_configuration():
+    print("Cleaning platform topics")
+    client.publish("platform/hadh", "", retain=True)
+    client.publish("platform/ecdh", "", retain=True)
     print("Subscribing to main topics")
     for topic in args.topics:
             t = topic

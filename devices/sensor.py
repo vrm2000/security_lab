@@ -2,12 +2,9 @@ from dotenv import load_dotenv
 import paho.mqtt.client as mqtt
 from argparse import ArgumentParser
 import time, hmac, random, os, bson
-from datetime import datetime
-from cryptography.hazmat.primitives.asymmetric import dh
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
@@ -32,9 +29,8 @@ class Sensor:
                 self.nonce = os.urandom(16)
         elif hasattr(args, 'encryption_algorithm_additionasl_data'):
             self.algorithm = f"aead/{args.encryption_algorithm_additional_data.lower()}"
-        else:
-            self.algorithm = "ea/aes"
         self.type_sensor = args.topic
+
         self.mac = self.rand_mac()
         self.client = self.connect()
         self.key = None
@@ -45,7 +41,8 @@ class Sensor:
     # Función de conexión con shiftr.io
     def on_connect(self, client, userdata, flags, rc):
         self.client.subscribe("platform/*")
-        print("Conectado a shiftr.io con código de resultado: "+str(rc))
+        if self.type_sensor == "humidity":
+            print("Conectado a shiftr.io con código de resultado: "+str(rc))
 
     def generate_dh_keys(self, parameters):
         private_key = parameters.generate_private_key()
@@ -66,7 +63,8 @@ class Sensor:
     
     def diffie_hellman(self, client, payload, algorithm):
         # first receive the parameters and the other's public key
-        print("Generating keys...")
+        if self.type_sensor == "humidity":
+            print("Generating keys...")
         decoded_message = bson.loads(payload)
         # load parameters and other's public key
         serialized_other_public_key = decoded_message["serialized_public_key"]
@@ -102,7 +100,8 @@ class Sensor:
         # publish own public key to server and signature
         credentials = {"pubkey": serialized_public_key, "nonce": str(self.nonce.hex()), "signature": signature, "algorithm": self.algorithm.encode("utf-8")}
         client.publish(f'newDevice/{self.mac}', bson.dumps(credentials))
-        print("Published own public key to platform")
+        if self.type_sensor == "humidity":
+            print("Published own public key to platform")
 
         # Ajustamos la longitud de la clave secreta para que cumpla los requisitos de longitud del algoritmo escogido
         hkdf = HKDF(
@@ -116,8 +115,14 @@ class Sensor:
 
     def on_message(self, client, userdata, message):
         topic_split = message.topic.split('/')
-        print(topic_split)
         if len(topic_split) == 2 and topic_split[0] == "platform":
+            # Parada para el re-establecimiento de las claves con la plataforma
+            print
+            if topic_split[1].lower() == "ecdh":
+                self.client.unsubscribe("platform/hadh")
+            elif topic_split[1].lower() == "hadh":
+                self.client.unsubscribe("platform/ecdh")
+
             self.stopPublish = True
             algorithm = topic_split[1]
             self.diffie_hellman(
@@ -125,10 +130,12 @@ class Sensor:
                 message.payload,
                 algorithm
             )
+            # Reanudamos comunicación una vez terminado el intercambio
             self.stopPublish = False
             return
         else:
-            print(message.topic)
+            if self.type_sensor == "humidity":
+                print(message.topic)
 
     def connect(self) -> mqtt.Client:
         # Conexión con shiftr.io
@@ -162,7 +169,8 @@ class Sensor:
             self.client.publish(f"{self.topic}/{self.mac}", ciphertext)
 
         # Publicar los valores en los temas MQTT correspondientes
-        print(f"({self.mac}) New {self.type_sensor} value: {message}")
+        if self.type_sensor == "humidity":
+            print(f"({self.mac}) New {self.type_sensor} value: {message}")
          
     def generateNewMessage(self):
         message = str(self.output_function())
@@ -195,9 +203,8 @@ class Sensor:
         while self.key == None:
             self.client.loop()
             time.sleep(1)
-        print("Conection stablished with platform")
-        cipher = self.cipher
-        self.type_sensor = args.topic
+        if self.type_sensor == "humidity":
+            print("Conection stablished with platform")
         self.topic = f"security/{self.type_sensor}"
         # Generamos los datos adicionales que será la MAC del dispositivo
         additional_data = hmac.new(self.key, self.mac.encode("utf-8"), digestmod="sha256").digest()
@@ -213,9 +220,6 @@ def main():
     parser = ArgumentParser()
     parser.add_argument("-t", "--topic", dest="topic",
         required=True, help="the topic where we send the data. This decide the type of sensor")
-    # TODO: NOT IMPLEMENTED YET
-    parser.add_argument("-kt", "--key_timeout", dest="key_timeout", type=float,
-        default=300, help="the time after which we need to regenerate the encryption keys in seconds")
     parser.add_argument("-pt", "--publish_timeout", dest="publish_timeout", type=float,
         default=5, help="the time after which the sensor will send new data in seconds")
     # TODO: NOT IMPLEMENTED YET

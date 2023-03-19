@@ -4,7 +4,6 @@ from flask_socketio import SocketIO
 from argparse import ArgumentParser
 from datetime import datetime, timedelta
 from flask import Flask, render_template
-import os, bson, hmac, logging
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric import dh
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -12,6 +11,7 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
 import os, bson, hmac, logging, threading, time
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
 
 # parse arguments
 parser = ArgumentParser()
@@ -24,8 +24,9 @@ parser.add_argument("-kg", "--key_generator", dest="key_generator", type=int, ch
                         default=2, help="g value for diffie hellman key generation")
 parser.add_argument("-ks", "--key_size", dest="key_size", type=int, choices=[512, 1024, 2048],
                         default=512, help="key size for diffie hellman key generation")
-parser.add_argument("-kt", "--key_timeout", dest="key_timeout", type=float,
-        default=300, help="the time after which we need to regenerate the encryption keys in seconds")
+parser.add_argument("-kt", "--key_timeout", dest="key_timeout", type=int,
+    default=30, help="the time after which we need to regenerate the encryption keys in seconds")
+    
 args = parser.parse_args()
 
 load_dotenv()
@@ -56,7 +57,7 @@ def keyRotation():
             print("********************************* Regenerating keys *********************************")
             start_diffie_hellman()
         else:
-            time.sleep(10)
+            time.sleep(2)
 
 
 @app.route('/')
@@ -145,36 +146,35 @@ def start_diffie_hellman():
             serialization.Encoding.PEM,
             serialization.ParameterFormat.PKCS3
         )
-        serialized_public_key = public_key.public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo
-        )
-        encoded_data = {"serialized_parameters" : serialized_parameters, "serialized_public_key" : serialized_public_key}
-        encoded_data = bson.dumps(encoded_data)
     elif args.key_exchange_algorithm == "ECDH":
         # Generate an ephemeral private key for this exchange
         private_key = ec.generate_private_key(ec.SECP256R1())
         public_key = private_key.public_key()
-        serialized_public_key = public_key.public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo
-        )
-        encoded_data = {"serialized_parameters" : None, "serialized_public_key" : serialized_public_key}
-        encoded_data = bson.dumps(encoded_data)
+        serialized_parameters = None
     else:
         raise ValueError(f"Key exchange algorithm '{args.key_exchange_algorithm}' not supported")
     
+    # serialize public key
+    serialized_public_key = public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    # encode data
+    encoded_data = {
+        "key_exchange_algorithm" : args.key_exchange_algorithm,
+        "serialized_parameters" : serialized_parameters,
+        "serialized_public_key" : serialized_public_key
+    }
+    encoded_data = bson.dumps(encoded_data)
+
     platform_keys["pubkey"] = public_key
     platform_keys["privkey"] = private_key
     # publish own public key to server
-    key_exchange_topic = f"platform/{args.key_exchange_algorithm.lower()}"
+    key_exchange_topic = "platform"
     client.publish(key_exchange_topic, encoded_data, retain=True)
     print(f"Public key published in topic {key_exchange_topic}")
 
 def start_platform_configuration():
-    print("Cleaning platform topics")
-    client.publish("platform/hadh", "", retain=True)
-    client.publish("platform/ecdh", "", retain=True)
     print("Subscribing to main topics")
     for topic in args.topics:
             t = topic

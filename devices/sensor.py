@@ -21,7 +21,7 @@ class Sensor:
         self.topic = f"security/{topic}"
         self.output_function = output_function
         self.nonce = os.urandom(12)
-        self.stopPublish = True
+        self.stop_publish = False
 
         if hasattr(args, 'encryption_algorithm'):
             self.algorithm = f"ae/{args.encryption_algorithm.lower()}"
@@ -40,7 +40,7 @@ class Sensor:
 
     # Función de conexión con shiftr.io
     def on_connect(self, client, userdata, flags, rc):
-        self.client.subscribe("platform/*")
+        self.client.subscribe("platform")
         if self.type_sensor == "humidity":
             print("Conectado a shiftr.io con código de resultado: "+str(rc))
 
@@ -61,29 +61,30 @@ class Sensor:
             format=serialization.PublicFormat.SubjectPublicKeyInfo)
         return ephemeral_private_key, ephemeral_public_key, serialized_ephemeral_public_key
     
-    def diffie_hellman(self, client, payload, algorithm):
+    def diffie_hellman(self, client, payload):
         # first receive the parameters and the other's public key
         if self.type_sensor == "humidity":
             print("Generating keys...")
         decoded_message = bson.loads(payload)
-        # load parameters and other's public key
+        # load algorithm and other's public key
+        key_exchange_algorithm = decoded_message["key_exchange_algorithm"]
         serialized_other_public_key = decoded_message["serialized_public_key"]
         # Extract the received public key from the message
         other_public_key = serialization.load_pem_public_key(
                 serialized_other_public_key)
-        if algorithm == "hadh":
+        if key_exchange_algorithm == "HADH":
             serialized_parameters = decoded_message["serialized_parameters"]
             parameters = serialization.load_pem_parameters(serialized_parameters)
             # generate own key pair
             private_key, public_key, serialized_public_key = self.generate_dh_keys(parameters)
             # get shared secret
             shared_secret = private_key.exchange(other_public_key)
-        elif algorithm == "ecdh":
+        elif key_exchange_algorithm == "ECDH":
             private_key, public_key, serialized_public_key = self.generate_ecdh_keys()
             # Compute the shared secret using the received public key and the ephemeral private key
             shared_secret = private_key.exchange(ec.ECDH(), other_public_key)
         else:
-            raise ValueError(f"key encryption algorithm {algorithm} not supported.")
+            raise ValueError(f"key exchange algorithm {key_exchange_algorithm} not supported.")
         
         hkdf = HKDF(
             algorithm=hashes.SHA256(),
@@ -98,40 +99,28 @@ class Sensor:
         signature = hmac.new(self.key, (f"Soy un sensor con mac {self.mac}").encode("UTF-8"), digestmod="sha256").digest()
 
         # publish own public key to server and signature
-        credentials = {"pubkey": serialized_public_key, "nonce": str(self.nonce.hex()), "signature": signature, "algorithm": self.algorithm.encode("utf-8")}
+        credentials = {
+            "pubkey": serialized_public_key,
+            "nonce": str(self.nonce.hex()),
+            "signature": signature,
+            "algorithm": self.algorithm.encode("utf-8")
+        }
         client.publish(f'newDevice/{self.mac}', bson.dumps(credentials))
         if self.type_sensor == "humidity":
             print("Published own public key to platform")
 
         # Ajustamos la longitud de la clave secreta para que cumpla los requisitos de longitud del algoritmo escogido
-        hkdf = HKDF(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=None,
-            info=b'',
-            backend=default_backend()
-        )
         self.cipher = self.chooseEncryptionAlgorithm(self.key)
 
     def on_message(self, client, userdata, message):
-        topic_split = message.topic.split('/')
-        if len(topic_split) == 2 and topic_split[0] == "platform":
-            # Parada para el re-establecimiento de las claves con la plataforma
-            print
-            if topic_split[1].lower() == "ecdh":
-                self.client.unsubscribe("platform/hadh")
-            elif topic_split[1].lower() == "hadh":
-                self.client.unsubscribe("platform/ecdh")
-
-            self.stopPublish = True
-            algorithm = topic_split[1]
+        if message.topic == "platform":
+            self.stop_publish = True
             self.diffie_hellman(
                 client,
-                message.payload,
-                algorithm
+                message.payload
             )
             # Reanudamos comunicación una vez terminado el intercambio
-            self.stopPublish = False
+            self.stop_publish = False
             return
         else:
             if self.type_sensor == "humidity":
@@ -209,7 +198,7 @@ class Sensor:
         # Generamos los datos adicionales que será la MAC del dispositivo
         additional_data = hmac.new(self.key, self.mac.encode("utf-8"), digestmod="sha256").digest()
         # Bucle principal
-        while self.stopPublish == False:
+        while self.stop_publish == False:
             self.client.loop()
             message = self.generateNewMessage()
             self.encrypt_publish_data(self.cipher, message, additional_data)

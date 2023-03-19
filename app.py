@@ -3,7 +3,8 @@ from dotenv import load_dotenv
 from flask_socketio import SocketIO
 from argparse import ArgumentParser
 from datetime import datetime, timedelta
-from flask import Flask, render_template
+from flask import Flask, render_template, redirect
+from flask_cors import CORS
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric import dh
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -32,6 +33,7 @@ args = parser.parse_args()
 load_dotenv()
 
 app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "http://localhost:5000"}})
 app.config['SECRET'] = 'my secret key'
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 app.config['MQTT_KEEPALIVE'] = 5
@@ -45,6 +47,7 @@ socketio = SocketIO(app)
 # Diccionario con todos los dispositivos conectados y que han hecho intercambio Diffie-Hellman.
 # Contiene clave compartida (shared_key) y el nonce de la comunicación (nonce)
 devices = dict()
+unsub_devices = []
 # Diccionario que contiene claves público (pubkey) y privada (privkey) de la plataforma.
 platform_keys = dict()
 
@@ -62,7 +65,16 @@ def keyRotation():
 
 @app.route('/')
 def index():
-    return render_template('index.html', devices=devices.keys())
+    return render_template('index.html', devices=devices)
+
+@app.route('/unsubscribe/<string:sensor_type>/<string:mac>', methods=['GET'])
+def unsubscribe(sensor_type, mac):
+    print(f"security/{sensor_type}/{mac}")
+    client.unsubscribe(f"security/{sensor_type}/{mac}")
+    if mac in devices:
+        devices.pop(mac)
+    unsub_devices.append(mac)
+    return redirect('/')
 
 
 def chooseEncryptionAlgorithm(algo, key, nonce):
@@ -88,31 +100,32 @@ def chooseEncryptionAlgorithm(algo, key, nonce):
 
 
 def register_device(message, client, mac):
-    decoded_message = bson.loads(message)
-    serialized_sensor_public_key = decoded_message["pubkey"]
-    nonce = bytes.fromhex(decoded_message["nonce"])
-    algo = decoded_message["algorithm"].decode("utf-8")
+    if mac not in unsub_devices:
+        decoded_message = bson.loads(message)
+        serialized_sensor_public_key = decoded_message["pubkey"]
+        nonce = bytes.fromhex(decoded_message["nonce"])
+        algo = decoded_message["algorithm"].decode("utf-8")
 
-    shared_key = handle_sensor_public_key(serialized_sensor_public_key, mac)
+        shared_key = handle_sensor_public_key(serialized_sensor_public_key, mac)
 
-    cipher = chooseEncryptionAlgorithm(algo, shared_key, nonce)
-    algo = algo.split("/")
-    devices[mac] =  {"shared_key": shared_key ,"nonce": nonce, "cipher": cipher, "encryption": algo}
+        cipher = chooseEncryptionAlgorithm(algo, shared_key, nonce)
+        algo = algo.split("/")
+        devices[mac] =  {"mac": mac, "sensor_type": decoded_message["sensor_type"].decode("utf-8"), "shared_key": shared_key ,"nonce": nonce, "cipher": cipher, "encryption": algo}
 
-    # generate signature hmac to compare with device's
-    signature = hmac.new(shared_key, (f"Soy un sensor con mac {mac}").encode("UTF-8"), digestmod="sha256").digest()
+        # generate signature hmac to compare with device's
+        signature = hmac.new(shared_key, (f"Soy un sensor con mac {mac}").encode("UTF-8"), digestmod="sha256").digest()
 
-    # check if device is who it claims to be
-    try:
-        if signature == decoded_message["signature"]:
-            print(f"Sensor {mac} succesfully authenticated")
-            print(f"Received new login from device {mac}")
-            devices[mac]["authenticated"] = True
-        else:
-            print("Invalid HMAC Authentication")
-            devices[mac]["authenticated"] = False
-    except:
-        print("An exception occurred tryng to authenticate...")
+        # check if device is who it claims to be
+        try:
+            if signature == decoded_message["signature"]:
+                print(f"Sensor {mac} succesfully authenticated")
+                print(f"Received new login from device {mac}")
+                devices[mac]["authenticated"] = True
+            else:
+                print("Invalid HMAC Authentication")
+                devices[mac]["authenticated"] = False
+        except:
+            print("An exception occurred tryng to authenticate...")
 
 
 def handle_sensor_public_key(serialized_sensor_public_key, mac):
@@ -188,7 +201,7 @@ def start_platform_configuration():
 # On connect
 def handle_connect(client, userdata, flags, rc):
     if rc == 0:
-        print("Running on http://127.0.0.1:5000")
+        print("Running on http://localhost:5000")
         print('Connected successfully')
         start_platform_configuration()
     else:
@@ -215,7 +228,6 @@ def decrypt_data(message, mac):
         plaintext = decryptor.update( message.payload[:-16]) + decryptor.finalize_with_tag(tag)
     else:
         plaintext = decryptor.update( message.payload)
-        
     return plaintext.decode("utf-8")
 
 def identify_sensor(message):
@@ -238,8 +250,9 @@ def handle_mqtt_message(client, userdata, message):
     # Identificamos el tipo de sensor y donde debe mandar los datos en la interfaz web
     submit = identify_sensor(topic[1])
     mac = topic[2]
-    if devices[mac]["authenticated"] == True:
+    if mac in devices and devices[mac]["authenticated"] == True:
         plaintext = decrypt_data(message, mac)
+        devices[mac]["last_value"] = plaintext
         if plaintext != "NO":
             print(f'({mac}) Received new {submit[3:len(submit)-4].lower()} value: {plaintext}')
             data = dict(
@@ -266,4 +279,5 @@ if __name__ == '__main__':
     thread.daemon = True
     thread.start()
     client.loop_start()
-    socketio.run(app, host='127.0.0.1', port=5000)
+    socketio.run(app, host='localhost', port=5000)
+

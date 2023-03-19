@@ -103,7 +103,8 @@ class Sensor:
             "pubkey": serialized_public_key,
             "nonce": str(self.nonce.hex()),
             "signature": signature,
-            "algorithm": self.algorithm.encode("utf-8")
+            "algorithm": self.algorithm.encode("utf-8"),
+            "sensor_type":self.type_sensor.encode("utf-8")
         }
         client.publish(f'newDevice/{self.mac}', bson.dumps(credentials))
         if self.type_sensor == "humidity":
@@ -144,7 +145,7 @@ class Sensor:
             random.randint(0, 255),
             random.randint(0, 255)
         )
-    def encrypt_publish_data(self, cipher, message, additional_data):
+    def encrypt_data(self, cipher, message, additional_data):
         encription = self.algorithm.split("/")
         encryptor = cipher.encryptor()
         if encription[0] == "aead":
@@ -201,7 +202,7 @@ class Sensor:
         while self.stop_publish == False:
             self.client.loop()
             message = self.generateNewMessage()
-            self.encrypt_publish_data(self.cipher, message, additional_data)
+            self.encrypt_data(self.cipher, message, additional_data)
             # Esperar 5 segundos antes de la siguiente lectura
             time.sleep(args.publish_timeout)
 

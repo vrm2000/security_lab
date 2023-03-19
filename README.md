@@ -18,6 +18,9 @@ For example:
 It is possible to connect directly to all topics:
 `python app.py -t "all"`
 
+You can specify the DH algorithm:
+`python app.py -t "all -kea ECDH"`
+
 #### **Run sensor**
 - `python devices/humidity.py`
 - `python devices/movement.py`

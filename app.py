@@ -26,6 +26,9 @@ parser.add_argument("-kg", "--key_generator", dest="key_generator", type=int, ch
                         default=2, help="g value for diffie hellman key generation")
 parser.add_argument("-ks", "--key_size", dest="key_size", type=int, choices=[512, 1024, 2048],
                         default=512, help="key size for diffie hellman key generation")
+parser.add_argument("-kt", "--key_timeout", dest="key_timeout", type=int,
+    default=30, help="the time after which we need to regenerate the encryption keys in seconds")
+    
 args = parser.parse_args()
 
 load_dotenv()
@@ -51,12 +54,12 @@ def keyRotation():
     last_key_update = datetime.now()
     while True:
         update_time = datetime.now() - last_key_update
-        if update_time > timedelta(seconds=30):
+        if update_time > timedelta(seconds=args.key_timeout):
             last_key_update =  datetime.now()
             print("********************************* Regenerating keys *********************************")
             start_diffie_hellman()
         else:
-            time.sleep(10)
+            time.sleep(2)
 
 
 @app.route('/')

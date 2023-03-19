@@ -111,13 +111,6 @@ class Sensor:
         print("Published own public key to platform")
 
         # Ajustamos la longitud de la clave secreta para que cumpla los requisitos de longitud del algoritmo escogido
-        hkdf = HKDF(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=None,
-            info=b'',
-            backend=default_backend()
-        )
         self.cipher = self.chooseEncryptionAlgorithm(self.key)
 
     def on_message(self, client, userdata, message):
@@ -215,9 +208,6 @@ def main():
     parser = ArgumentParser()
     parser.add_argument("-t", "--topic", dest="topic",
         required=True, help="the topic where we send the data. This decide the type of sensor")
-    # TODO: NOT IMPLEMENTED YET
-    parser.add_argument("-kt", "--key_timeout", dest="key_timeout", type=float,
-        default=300, help="the time after which we need to regenerate the encryption keys in seconds")
     parser.add_argument("-pt", "--publish_timeout", dest="publish_timeout", type=float,
         default=5, help="the time after which the sensor will send new data in seconds")
     # TODO: NOT IMPLEMENTED YET

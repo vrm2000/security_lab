@@ -7,6 +7,7 @@ cryptography==39.0.1
 Flask==2.2.3
 Flask-MQTT==1.1.1
 Flask-SocketIO==5.3.2
+flask_cors==3.0.10
 itsdangerous==2.1.2
 Jinja2==3.1.2
 MarkupSafe==2.1.2
